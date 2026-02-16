@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: study_tour_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    container_name: study_tour_backend
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      # 核心变更：更换为火山引擎 Ark 的变量名 
+      - ARK_API_KEY=${ARK_API_KEY} 
+      - ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+      - ARK_MODEL_ID=${ARK_MODEL_ID} 
+      # 建议增加 JWT 密钥配置
+      - APP_SECRET_KEY=${APP_SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: study_tour_ui
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  postgres_data:
