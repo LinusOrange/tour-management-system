@@ -184,7 +184,7 @@ import {
 } from '@element-plus/icons-vue'
 
 // --- 基础配置 ---
-const API_BASE = 'http://123.206.212.218:8000/api/v1'
+const API_BASE = 'http://212.64.26.173:8000/api/v1'
 const loading = ref(false)
 const activities = ref([])
 const searchQuery = ref('')

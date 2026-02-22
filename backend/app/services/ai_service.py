@@ -191,3 +191,39 @@ def select_multiple_locations_with_ai(requirement: str, locations_pool: list) ->
     except Exception as e:
         print(f"Selection Schema Error: {e}")
         return []
+    
+def generate_document_sections(location_data: dict, activities: list, custom_prompts: dict = None) -> dict:
+    """
+    分段生成逻辑：加入用户自定义提示词增强
+    """
+    base_info = location_data.get('description', '')
+    act_titles = "、".join([a['title'] for a in activities])
+    sections = {}
+    
+    # 定义生成配置：标题、Key、默认 Prompt
+    config = [
+        ('background', '课程背景', f"写一段 800 字的课程背景。基地：{base_info[:300]}"),
+        ('goals', '研学目标', f"基于活动 {act_titles}，生成 500 字的研学目标。"),
+        ('highlights', '课程亮点', f"总结 4 个硬核课程亮点，每个亮点带标题并展开。")
+    ]
+
+    for key, title, default_p in config:
+        # 如果用户输入了自定义提示词，则将其注入
+        user_instr = custom_prompts.get(key, "") if custom_prompts else ""
+        final_prompt = f"系统要求：{default_p}\n用户特别指令：{user_instr}\n请开始撰写："
+        
+        print(f"正在生成 {title}...")
+        sections[key] = call_ark_simple(final_prompt)
+    
+    return sections
+
+def call_ark_simple(prompt: str) -> str:
+    """内部辅助：快速获取 AI 文本"""
+    try:
+        response = client.chat.completions.create(
+            model=AI_MODEL,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+    except:
+        return "内容生成失败，请手动补充。"

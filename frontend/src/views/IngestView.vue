@@ -78,7 +78,7 @@ const startIngest = async () => {
   loading.value = true 
   
   try {
-    const response = await axios.post('http://123.206.212.218:8000/api/v1/ai/mega-ingest', {
+    const response = await axios.post('http://212.64.26.173:8000/api/v1/ai/mega-ingest', {
       raw_text: rawText.value
     })
     

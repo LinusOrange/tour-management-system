@@ -17,6 +17,9 @@ from app.database import engine, get_db
 from app.services import ai_service
 from app.utils import auth as auth_utils
 
+from fastapi.responses import StreamingResponse
+from app.services import doc_service
+
 # --- 1. 鉴权配置 ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -54,6 +57,13 @@ def init_db():
 
 init_db()
 app = FastAPI(title="研学原子积木系统 - 多用户联网增强版")
+
+# main.py 修改处
+origins = [
+    "http://212.64.26.173",  # 👈 新服务器 IP
+    "http://chengdx.art",
+    "http://localhost:5173",
+]
 
 # CORS 配置
 # 针对你提到的 CORS 报错，建议生产环境将 ["*"] 替换为 ["http://chengdx.art"]
@@ -284,3 +294,43 @@ def get_grouped_assets(db: Session = Depends(get_db), current_user: models.User 
             } for a in loc.activities]
         })
     return result
+
+
+class ExportRequest(BaseModel):
+    location_id: str
+    activity_ids: List[str]
+    custom_prompts: Dict[str, str] # 接收前端的三个文本框内容
+
+@app.post("/api/v1/export/word")
+async def export_itinerary_word(
+    req: ExportRequest, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # 1. 获取选定的基地和积木数据
+    location = db.query(models.Location).filter_by(id=req.location_id, owner_id=current_user.id).first()
+    activities = db.query(models.AtomicActivity).filter(
+        models.AtomicActivity.id.in_(req.activity_ids),
+        models.AtomicActivity.owner_id == current_user.id
+    ).all()
+
+    # 2. 调用生成引擎
+    ai_sections = ai_service.generate_document_sections(
+        {"name": location.name, "description": location.description},
+        [{"title": a.title, "edu_goals": a.edu_goals} for a in activities],
+        custom_prompts=req.custom_prompts
+    )
+    
+    # 3. 渲染 Word 并返回流
+    final_data = {
+        "location": {"name": location.name, "address": location.address, "description": location.description},
+        "activities": [{"title": a.title, "duration": a.duration} for a in activities],
+        "ai_sections": ai_sections
+    }
+    file_stream = doc_service.create_study_tour_docx(final_data)
+    
+    return StreamingResponse(
+        file_stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename=itinerary.docx"}
+    )

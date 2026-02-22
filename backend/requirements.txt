@@ -15,3 +15,5 @@ python-jose[cryptography]
 # --- AI 服务 ---
 openai>=1.0.0
 python-dotenv
+
+python-docx
