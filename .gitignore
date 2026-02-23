@@ -6,10 +6,6 @@ __pycache__/
 node_modules/
 dist/
 
-# 忽略环境配置文件（保护你的 API Key 和数据库密码）
-.env
-auth_utils.py # 如果里面写死了密钥
-
 # 忽略 OS 临时文件
 .DS_Store
 
