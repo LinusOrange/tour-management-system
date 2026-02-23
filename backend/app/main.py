@@ -296,41 +296,85 @@ def get_grouped_assets(db: Session = Depends(get_db), current_user: models.User 
     return result
 
 
+class ExportTimelineItem(BaseModel):
+    id: Optional[str] = None
+    title: str
+    duration: int
+    location_name: Optional[str] = None
+    display_time: Optional[str] = None
+
+
 class ExportRequest(BaseModel):
-    location_id: str
-    activity_ids: List[str]
-    custom_prompts: Dict[str, str] # 接收前端的三个文本框内容
+    requirement: Optional[str] = ""
+    timeline: List[ExportTimelineItem]
+    custom_prompts: Dict[str, str]
+
 
 @app.post("/api/v1/export/word")
 async def export_itinerary_word(
-    req: ExportRequest, 
+    req: ExportRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # 1. 获取选定的基地和积木数据
-    location = db.query(models.Location).filter_by(id=req.location_id, owner_id=current_user.id).first()
-    activities = db.query(models.AtomicActivity).filter(
-        models.AtomicActivity.id.in_(req.activity_ids),
-        models.AtomicActivity.owner_id == current_user.id
-    ).all()
+    if not req.timeline:
+        raise HTTPException(status_code=400, detail="时间轴为空，请先在排产工作台添加活动")
 
-    # 2. 调用生成引擎
-    ai_sections = ai_service.generate_document_sections(
-        {"name": location.name, "description": location.description},
-        [{"title": a.title, "edu_goals": a.edu_goals} for a in activities],
+    activity_ids = [item.id for item in req.timeline if item.id]
+    db_activities = []
+    if activity_ids:
+        db_activities = db.query(models.AtomicActivity).filter(
+            models.AtomicActivity.id.in_(activity_ids),
+            models.AtomicActivity.owner_id == current_user.id
+        ).all()
+
+    activities_by_id = {str(a.id): a for a in db_activities}
+
+    unique_locations = {}
+    for item in req.timeline:
+        db_act = activities_by_id.get(item.id) if item.id else None
+        loc_name = item.location_name or (db_act.location.name if db_act and db_act.location else "未命名基地")
+        if loc_name in unique_locations:
+            continue
+
+        unique_locations[loc_name] = {
+            "name": loc_name,
+            "address": (db_act.location.address if db_act and db_act.location else "待补充"),
+            "description": (db_act.location.description if db_act and db_act.location else "该基地暂无详细介绍，请后续补充。")
+        }
+
+    timeline_data = []
+    for item in req.timeline:
+        db_act = activities_by_id.get(item.id) if item.id else None
+        timeline_data.append({
+            "title": item.title,
+            "duration": item.duration,
+            "location_name": item.location_name or (db_act.location.name if db_act and db_act.location else "待定基地"),
+            "display_time": item.display_time or "时间待定"
+        })
+
+    plan_context = {
+        "requirement": req.requirement or "",
+        "locations": list(unique_locations.values()),
+        "timeline": timeline_data
+    }
+
+    ai_sections = ai_service.generate_export_sections(
+        plan_context=plan_context,
         custom_prompts=req.custom_prompts
     )
-    
-    # 3. 渲染 Word 并返回流
+
     final_data = {
-        "location": {"name": location.name, "address": location.address, "description": location.description},
-        "activities": [{"title": a.title, "duration": a.duration} for a in activities],
+        "title": "研学课程方案",
+        "locations": list(unique_locations.values()),
+        "timeline": timeline_data,
         "ai_sections": ai_sections
     }
+
     file_stream = doc_service.create_study_tour_docx(final_data)
-    
+
     return StreamingResponse(
         file_stream,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f"attachment; filename=itinerary.docx"}
+        headers={"Content-Disposition": "attachment; filename=study-tour-program.docx"}
     )
+

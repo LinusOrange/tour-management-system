@@ -77,12 +77,15 @@
           <template #header>
             <div class="flex justify-between items-center">
               <span class="font-bold text-green-600">行程路线预览 (可拖拽微调)</span>
-              <el-time-select
-                v-model="baseStartTime"
-                start="08:00" step="00:30" end="11:00"
-                @change="refreshSchedule"
-                style="width: 120px"
-              />
+              <div class="flex items-center gap-2">
+                <el-button type="primary" plain @click="goToExportWorkbench">导出方案</el-button>
+                <el-time-select
+                  v-model="baseStartTime"
+                  start="08:00" step="00:30" end="11:00"
+                  @change="refreshSchedule"
+                  style="width: 120px"
+                />
+              </div>
             </div>
           </template>
 
@@ -116,13 +119,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import draggable from 'vuedraggable'
 import axios from 'axios'
 import { ElMessage, ElNotification } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { MagicStick, Location, Rank, Delete, Search, Refresh } from '@element-plus/icons-vue'
 
 const API_BASE = '/api/v1'
+const router = useRouter()
 const userRequirement = ref('')
 const baseStartTime = ref('09:00')
 const timeline = ref([])
@@ -233,6 +238,36 @@ const autoPlan = async () => {
     aiLoading.value = false
   }
 }
+
+
+const saveExportDraft = () => {
+  const draft = {
+    requirement: userRequirement.value,
+    timeline: timeline.value.map(item => ({
+      id: item.id,
+      title: item.title,
+      duration: item.duration,
+      location_name: item.location_name,
+      display_time: item.display_time
+    }))
+  }
+  localStorage.setItem('planner_export_draft', JSON.stringify(draft))
+}
+
+const goToExportWorkbench = () => {
+  if (timeline.value.length === 0) {
+    ElMessage.warning('请先在排产工作台生成或添加活动后再导出')
+    return
+  }
+  saveExportDraft()
+  router.push('/export')
+}
+
+watch([timeline, userRequirement], () => {
+  if (timeline.value.length > 0) {
+    saveExportDraft()
+  }
+}, { deep: true })
 
 const removeNode = (index) => {
   timeline.value.splice(index, 1)
