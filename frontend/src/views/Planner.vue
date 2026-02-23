@@ -122,7 +122,7 @@ import axios from 'axios'
 import { ElMessage, ElNotification } from 'element-plus'
 import { MagicStick, Location, Rank, Delete, Search, Refresh } from '@element-plus/icons-vue'
 
-const API_BASE = 'http://212.64.26.173:8000/api/v1'
+const API_BASE = '/api/v1'
 const userRequirement = ref('')
 const baseStartTime = ref('09:00')
 const timeline = ref([])

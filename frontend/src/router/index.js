@@ -13,6 +13,11 @@ const routes = [
     component: () => import('../views/Register.vue')
   },
   {
+    path: '/admin/login',
+    name: 'AdminLogin',
+    component: () => import('../views/AdminLogin.vue')
+  },
+  {
     // AI 资源录入 (首页)
     path: '/',
     name: 'Ingest',

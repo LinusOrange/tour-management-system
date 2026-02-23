@@ -141,7 +141,7 @@ const handleRegister = async () => {
     loading.value = true
     try {
       // 仅向后端发送 username 和 password
-      await axios.post('http://212.64.26.173:8000/api/v1/auth/register', {
+      await axios.post('/api/v1/auth/register', {
         username: regForm.username,
         password: regForm.password
       })
