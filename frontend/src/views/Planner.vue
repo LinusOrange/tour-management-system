@@ -12,12 +12,14 @@
             v-model="userRequirement"
             type="textarea"
             :rows="3"
-            placeholder="输入指令，例如：'安排上午去故宫看古建，下午做漆扇'..."
+            placeholder="输入指令，例如：安排 3-4 天行程，上午科技馆，下午实践活动..."
           />
           <el-button type="primary" class="mt-4 w-full" :loading="aiLoading" @click="autoPlan">
             开始 AI 智能排产
           </el-button>
-          <p class="constraint-tip mt-3">自动排产时段约束：上午不晚于 12:00 结束，下午安排在 14:00-18:00。</p>
+          <p class="constraint-tip mt-3">
+            自动排产规则：上午不晚于 12:00，下午 14:00-18:00；超出当天自动顺延到下一天。
+          </p>
         </el-card>
 
         <el-card shadow="never" class="resource-card">
@@ -34,34 +36,18 @@
 
           <div class="activity-pool">
             <el-collapse v-model="activeNames">
-              <el-collapse-item
-                v-for="(group, location) in groupedActivities"
-                :key="location"
-                :name="location"
-              >
+              <el-collapse-item v-for="(group, location) in groupedActivities" :key="location" :name="location">
                 <template #title>
                   <div class="flex justify-between items-center w-full pr-4">
                     <span class="font-bold text-gray-600">
                       <el-icon class="mr-1"><Location /></el-icon>{{ location }}
                       <small class="font-normal text-gray-400">({{ group.length }})</small>
                     </span>
-                    <el-button
-                      size="small"
-                      type="primary"
-                      plain
-                      @click.stop="addAllFromLocation(group)"
-                    >
-                      全部加入
-                    </el-button>
+                    <el-button size="small" type="primary" plain @click.stop="addAllFromLocation(group)">全部加入</el-button>
                   </div>
                 </template>
 
-                <div
-                  v-for="act in group"
-                  :key="act.id"
-                  class="block-item mini"
-                  @click="addToTimeline(act)"
-                >
+                <div v-for="act in group" :key="act.id" class="block-item mini" @click="addToTimeline(act)">
                   <div class="block-header">
                     <span class="title">{{ act.title }}</span>
                     <el-tag size="small" effect="plain">{{ act.duration }}min</el-tag>
@@ -77,14 +63,16 @@
         <el-card shadow="never">
           <template #header>
             <div class="flex justify-between items-center">
-              <span class="font-bold text-green-600">行程路线预览 (可拖拽微调)</span>
+              <span class="font-bold text-green-600">行程路线预览 (支持多日与手动微调)</span>
               <div class="flex items-center gap-2">
                 <el-button type="primary" plain @click="goToExportWorkbench">导出方案</el-button>
                 <el-time-select
                   v-model="baseStartTime"
-                  start="08:00" step="00:30" end="11:00"
+                  start="08:00"
+                  step="00:30"
+                  end="11:00"
                   @change="refreshSchedule"
-                  style="width: 120px"
+                  style="width: 130px"
                 />
               </div>
             </div>
@@ -102,8 +90,17 @@
                     <div class="drag-handle"><el-icon><Rank /></el-icon></div>
                     <div class="block-content">
                       <h4>{{ element.title }}</h4>
-                      <p>📍 {{ element.location_name }} | ⏱️ {{ element.duration }} 分钟</p>
+                      <p>📍 {{ element.location_name }} | ⏱️ {{ element.manual_duration || element.duration }} 分钟</p>
+
                       <div class="editor-row">
+                        <el-input-number
+                          v-model="element.manual_day"
+                          :min="1"
+                          :max="30"
+                          :step="1"
+                          controls-position="right"
+                          @change="refreshSchedule"
+                        />
                         <el-time-select
                           v-model="element.manual_start_time"
                           placeholder="手动开始时间"
@@ -111,27 +108,19 @@
                           step="00:05"
                           end="18:00"
                           clearable
-                          style="width: 135px"
+                          style="width: 140px"
                           @change="refreshSchedule"
                         />
                         <el-input-number
                           v-model="element.manual_duration"
                           :min="10"
-                          :max="240"
+                          :max="480"
                           :step="5"
                           controls-position="right"
                           @change="refreshSchedule"
                         />
-                        <span class="hint">可手动调整，仅本次排产有效</span>
+                        <span class="hint">天数/时间/时长手调，仅本次排产有效</span>
                       </div>
-                      <el-alert
-                        v-if="element.unscheduled"
-                        type="warning"
-                        :closable="false"
-                        show-icon
-                        title="当前活动超出 18:00，未排入时段，请手动缩短时长或调整开始时间"
-                        class="mt-2"
-                      />
                     </div>
                     <el-button link type="danger" @click="removeNode(index)">
                       <el-icon><Delete /></el-icon>
@@ -165,6 +154,7 @@ const libraryActivities = ref([])
 const searchQuery = ref('')
 const aiLoading = ref(false)
 const activeNames = ref([])
+
 const TRANSITION_TIME = 15
 const MORNING_END = 12 * 60
 const AFTERNOON_START = 14 * 60
@@ -187,9 +177,12 @@ const normalizeIntoWindow = (minute) => {
   return minute
 }
 
+const nextDayStart = () => parseTimeToMinutes(baseStartTime.value) || 9 * 60
+
 const ensureSchedulableItem = (item) => ({
   ...item,
-  manual_duration: item.manual_duration || item.duration,
+  manual_day: Number(item.manual_day) || 0,
+  manual_duration: Number(item.manual_duration) || Number(item.duration),
   manual_start_time: item.manual_start_time || ''
 })
 
@@ -224,10 +217,7 @@ const groupedActivities = computed(() => {
 })
 
 const addAllFromLocation = (acts) => {
-  const newItems = acts.map(act => ensureSchedulableItem({
-    ...act,
-    temp_id: Date.now() + Math.random() + Math.random()
-  }))
+  const newItems = acts.map(act => ensureSchedulableItem({ ...act, temp_id: Date.now() + Math.random() + Math.random() }))
   timeline.value.push(...newItems)
   refreshSchedule()
   ElMessage.success(`已将 ${acts.length} 个活动加入行程`)
@@ -241,44 +231,52 @@ const addToTimeline = (act) => {
 const refreshSchedule = () => {
   if (timeline.value.length === 0) return
 
-  let current = parseTimeToMinutes(baseStartTime.value) || 9 * 60
-  let overflowCount = 0
+  let day = 1
+  let current = nextDayStart()
 
   timeline.value = timeline.value.map((rawItem) => {
     const item = ensureSchedulableItem(rawItem)
-    const duration = Number(item.manual_duration) > 0 ? Number(item.manual_duration) : Number(item.duration)
+    const duration = item.manual_duration > 0 ? item.manual_duration : Number(item.duration)
+
+    // 手动指定天数（仅本次排产）
+    if (item.manual_day && item.manual_day > day) {
+      day = item.manual_day
+      current = nextDayStart()
+    }
 
     let start = item.manual_start_time ? parseTimeToMinutes(item.manual_start_time) : current
     start = normalizeIntoWindow(start)
 
+    // 上午放不下则进入下午
     if (start < MORNING_END && start + duration > MORNING_END) {
       start = AFTERNOON_START
     }
 
-    if (start + duration > DAY_END) {
-      overflowCount += 1
-      return {
-        ...item,
-        manual_duration: duration,
-        display_time: '--:-- - --:--',
-        unscheduled: true
+    // 当天下午放不下则滚动到下一天
+    while (start + duration > DAY_END) {
+      day += 1
+      start = nextDayStart()
+      start = normalizeIntoWindow(start)
+      if (start < MORNING_END && start + duration > MORNING_END) {
+        start = AFTERNOON_START
       }
     }
 
     const end = start + duration
+
     current = normalizeIntoWindow(end + TRANSITION_TIME)
+    if (current >= DAY_END) {
+      day += 1
+      current = nextDayStart()
+    }
 
     return {
       ...item,
+      manual_day: item.manual_day || day,
       manual_duration: duration,
-      display_time: `${formatMinutes(start)} - ${formatMinutes(end)}`,
-      unscheduled: false
+      display_time: `D${day} ${formatMinutes(start)} - ${formatMinutes(end)}`
     }
   })
-
-  if (overflowCount > 0) {
-    ElMessage.warning(`有 ${overflowCount} 个活动超出 18:00，已标记为未排入，请手动调整`) 
-  }
 }
 
 const autoPlan = async () => {
@@ -358,24 +356,45 @@ const removeNode = (index) => {
 .planner-container { background-color: #f8fafc; min-height: 100vh; }
 .activity-pool :deep(.el-collapse) { border: none; }
 .activity-pool :deep(.el-collapse-item__header) {
-  height: auto; padding: 12px 0; line-height: 1.4; border-bottom: 1px solid #f1f5f9;
+  height: auto;
+  padding: 12px 0;
+  line-height: 1.4;
+  border-bottom: 1px solid #f1f5f9;
 }
 .activity-pool :deep(.el-collapse-item__content) { padding-bottom: 8px; padding-top: 8px; }
 
 .block-item.mini {
-  background: #fff; border: 1px solid #f1f5f9; border-radius: 6px;
-  padding: 8px 12px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s;
+  background: #fff;
+  border: 1px solid #f1f5f9;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 .block-item.mini:hover { border-color: #3b82f6; background-color: #eff6ff; }
 .block-item.mini .title { font-size: 13px; color: #475569; }
 
 .timeline-item-wrapper { display: flex; gap: 20px; }
-.time-indicator { display: flex; flex-direction: column; align-items: center; width: 60px; }
-.time-bubble { background: #3b82f6; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+.time-indicator { display: flex; flex-direction: column; align-items: center; width: 95px; }
+.time-bubble {
+  background: #3b82f6;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: bold;
+}
 .time-indicator .line { width: 2px; flex-grow: 1; background: #cbd5e1; margin: 4px 0; }
 .itinerary-block {
-  flex-grow: 1; background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-  padding: 16px; display: flex; align-items: center; margin-bottom: 20px;
+  flex-grow: 1;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
 }
 .drag-handle { cursor: grab; color: #94a3b8; margin-right: 15px; }
 .editor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
