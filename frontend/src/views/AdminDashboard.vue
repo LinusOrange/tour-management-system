@@ -31,7 +31,7 @@ const userList = ref([])
 
 const fetchUsers = async () => {
   try {
-    const res = await axios.get('http://212.64.26.173:8000/api/v1/admin/users')
+    const res = await axios.get('/api/v1/admin/users')
     userList.value = res.data
   } catch (err) {
     ElMessage.error("获取列表失败，请确认管理员权限")
