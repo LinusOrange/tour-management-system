@@ -1,7 +1,8 @@
 import json
 import os
+import re
 from openai import OpenAI
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Set, Any
 
 # 配置信息
 AI_KEY = os.getenv("ARK_API_KEY", "91a598f5-a30c-4ac7-9c6f-3e0496b73c3b")
@@ -160,15 +161,55 @@ def plan_activities_with_ai(requirement: str, activity_pool: list) -> list:
         print(f"Planning Schema Error: {e}")
         return []
 
+def _extract_keywords(text: str) -> List[str]:
+    """从自然语言需求中提取可用于匹配的关键词（中英文、数字）。"""
+    if not text:
+        return []
+
+    tokens = re.split(r"[，。,.；;、\s:：()（）\[\]【】|/\\-]+", text.lower())
+    stop_words = {
+        "我", "我们", "你", "你们", "请", "需要", "想要", "安排", "一个", "一些", "进行", "可以", "以及", "和", "与", "的", "在", "到", "去", "并", "含", "包含", "相关", "主题", "活动", "课程", "研学", "行程", "天", "日"
+    }
+    keywords = [t for t in tokens if t and len(t) >= 2 and t not in stop_words]
+    return list(dict.fromkeys(keywords))
+
+
 def select_multiple_locations_with_ai(requirement: str, locations_pool: list) -> list:
-    """AI 匹配：筛选基地名称"""
-    pool_text = "\n".join([f"- {loc['name']}: {loc['summary']}" for loc in locations_pool])
+    """
+    AI+规则混合匹配基地：
+    1) 规则：关键词命中基地名称 / 基地摘要（含子活动标题、内容、目标）
+    2) AI：语义匹配补充候选
+    3) 合并去重
+    """
+    if not requirement or not locations_pool:
+        return []
+
+    # 规则匹配：支持“基地名称命中” + “活动目标/内容命中”
+    keywords = _extract_keywords(requirement)
+    keyword_matched: Set[str] = set()
+    for loc in locations_pool:
+        name_text = str(loc.get('name', '')).lower()
+        summary_text = str(loc.get('summary', '')).lower()
+        if any((kw in name_text) or (kw in summary_text) for kw in keywords):
+            keyword_matched.add(loc.get('name'))
+
+    # AI 匹配：用于补充语义相关基地
+    pool_text = "\n".join([
+        f"- 基地名: {loc.get('name', '')}\n  基地摘要: {loc.get('summary', '')}" for loc in locations_pool
+    ])
+    ai_matched: Set[str] = set()
     try:
         response = client.chat.completions.create(
-            model=AI_MODEL, 
+            model=AI_MODEL,
             messages=[
-                {"role": "system", "content": "你是一个研学匹配专家。"},
-                {"role": "user", "content": f"需求：{requirement}\n资源：\n{pool_text}"}
+                {
+                    "role": "system",
+                    "content": "你是研学排产匹配专家。必须根据用户需求关键词匹配基地。若关键词命中基地名称或基地下任一子活动目标/内容/标题，则应选择该基地。"
+                },
+                {
+                    "role": "user",
+                    "content": f"用户需求：{requirement}\n\n候选基地与子活动摘要：\n{pool_text}\n\n请返回最相关的基地名称数组。"
+                }
             ],
             response_format={
                 "type": "json_schema",
@@ -187,11 +228,93 @@ def select_multiple_locations_with_ai(requirement: str, locations_pool: list) ->
             }
         )
         res_data = json.loads(response.choices[0].message.content)
-        return res_data.get("selected_locations", [])
+        ai_matched = set(res_data.get("selected_locations", []))
     except Exception as e:
         print(f"Selection Schema Error: {e}")
-        return []
+
+    merged = list(dict.fromkeys([*keyword_matched, *ai_matched]))
+
+    # 如果完全没命中，保底给 AI 第一候选（避免空计划）
+    if not merged and locations_pool:
+        merged = [locations_pool[0].get('name')]
+
+    return merged
     
+
+
+def match_locations_and_activities(requirement: str, locations_pool: list, location_activity_map: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """
+    排产匹配策略：
+    1) 优先命中研学基地（命中后默认加入该基地全部活动）
+    2) 当需求中出现具体活动名称/活动关键词时，再对基地内活动做筛选
+    3) 返回未命中关键词，供前端提示
+    """
+    keywords = _extract_keywords(requirement)
+    selected_locations = select_multiple_locations_with_ai(requirement, locations_pool)
+
+    # 兜底：若无基地命中，返回空结果
+    if not selected_locations:
+        return {
+            "selected_locations": [],
+            "selected_activity_ids": {},
+            "matched_keywords": [],
+            "unmatched_keywords": keywords
+        }
+
+    # 基地维度可覆盖的文本
+    location_texts = {}
+    for loc in locations_pool:
+        name = loc.get('name', '')
+        if name in selected_locations:
+            location_texts[name] = f"{name} {loc.get('summary','')}".lower()
+
+    # 是否出现“具体活动”意图：关键词能命中某个活动标题/内容/目标
+    activity_hit_keywords: Set[str] = set()
+    selected_activity_ids: Dict[str, List[str]] = {}
+
+    for loc_name in selected_locations:
+        acts = location_activity_map.get(loc_name, [])
+        selected_activity_ids[loc_name] = [str(a.get('id')) for a in acts]  # 默认全选该基地活动
+
+        for kw in keywords:
+            for act in acts:
+                act_text = f"{act.get('title','')} {act.get('content','')} {act.get('edu_goals_text','')}".lower()
+                if kw in act_text:
+                    activity_hit_keywords.add(kw)
+
+    has_specific_activity_hint = len(activity_hit_keywords) > 0
+
+    # 若有具体活动提示词，则在命中基地内筛选活动；筛不到则回退到全选
+    if has_specific_activity_hint:
+        for loc_name in selected_locations:
+            acts = location_activity_map.get(loc_name, [])
+            filtered = []
+            for act in acts:
+                act_text = f"{act.get('title','')} {act.get('content','')} {act.get('edu_goals_text','')}".lower()
+                if any(kw in act_text for kw in keywords):
+                    filtered.append(str(act.get('id')))
+            if filtered:
+                selected_activity_ids[loc_name] = filtered
+
+    # 关键词命中检测（基地文本 + 实际入选活动文本）
+    matched_keywords: Set[str] = set()
+    selected_activity_text = []
+    for loc_name in selected_locations:
+        matched_keywords.update({kw for kw in keywords if kw in location_texts.get(loc_name, '')})
+        for act in location_activity_map.get(loc_name, []):
+            if str(act.get('id')) in selected_activity_ids.get(loc_name, []):
+                selected_activity_text.append(f"{act.get('title','')} {act.get('content','')} {act.get('edu_goals_text','')}".lower())
+
+    combined_activity_text = " ".join(selected_activity_text)
+    matched_keywords.update({kw for kw in keywords if kw in combined_activity_text})
+    unmatched_keywords = [kw for kw in keywords if kw not in matched_keywords]
+
+    return {
+        "selected_locations": selected_locations,
+        "selected_activity_ids": selected_activity_ids,
+        "matched_keywords": sorted(matched_keywords),
+        "unmatched_keywords": unmatched_keywords
+    }
 def generate_document_sections(location_data: dict, activities: list, custom_prompts: dict = None) -> dict:
     """
     分段生成逻辑：加入用户自定义提示词增强
@@ -227,3 +350,77 @@ def call_ark_simple(prompt: str) -> str:
         return response.choices[0].message.content
     except:
         return "内容生成失败，请手动补充。"
+
+def generate_export_sections(plan_context: dict, custom_prompts: dict | None = None) -> dict:
+    """
+    级联生成导出文案 5 个章节。
+    - section_1_base: 研学基地（结合排产工作台的基地/活动）
+    - section_2_background: 课程背景
+    - section_3_goals: 研学目标
+    - section_4_highlights: 课程亮点
+    - section_5_process: 研学流程说明
+    """
+    custom_prompts = custom_prompts or {}
+
+    locations = plan_context.get('locations', [])
+    timeline = plan_context.get('timeline', [])
+    requirement = plan_context.get('requirement', '')
+
+    location_text = "\n".join([
+        f"- 基地：{loc.get('name','未知基地')}；地址：{loc.get('address','待补充')}；简介：{loc.get('description','待补充')}"
+        for loc in locations
+    ])
+
+    timeline_text = "\n".join([
+        f"- {idx+1}. [{item.get('display_time','时间待定')}] {item.get('title','未命名活动')}（{item.get('duration', 0)}分钟，基地：{item.get('location_name','待定')}）"
+        for idx, item in enumerate(timeline)
+    ])
+
+    section_configs = [
+        (
+            'section_1_base',
+            '研学基地',
+            f"请根据以下排产涉及基地信息，撰写 400~600 字『研学基地』章节。重点写基地特色、教育价值与课程适配性。\n基地信息：\n{location_text}"
+        ),
+        (
+            'section_2_background',
+            '课程背景',
+            f"请撰写 500~800 字『课程背景』。结合用户需求与基地定位，说明项目缘起、时代价值、学段意义。\n用户需求：{requirement}\n基地信息：\n{location_text}"
+        ),
+        (
+            'section_3_goals',
+            '研学目标',
+            f"请生成『研学目标』章节，按知识目标、能力目标、素养目标三个维度展开，每个维度 2-3 条，可执行可评价。\n行程活动：\n{timeline_text}"
+        ),
+        (
+            'section_4_highlights',
+            '课程亮点',
+            "请生成『课程亮点』章节，输出 4 个亮点，每个亮点包含标题和一段 120~180 字说明，强调创新性与可落地性。"
+        ),
+        (
+            'section_5_process',
+            '研学流程',
+            f"请根据以下时间轴，写一段 400~700 字『研学流程说明』，强调环节衔接与学习闭环。\n时间轴：\n{timeline_text}"
+        )
+    ]
+
+    generated = {}
+    for key, section_name, default_prompt in section_configs:
+        user_prompt = custom_prompts.get(key, '').strip()
+        final_prompt = (
+            "你是一名资深研学课程总设计师。\n"
+            "【硬性约束】\n"
+            "1) 输出以正文为主，可包含少量小标题和分点以增强可读性。\n"
+            "2) 严禁输出 Markdown 语法（如 #、##、###、####、**）。\n"
+            "3) 不要重复章节名称，不要单独输出‘研学基地/课程背景/研学目标/课程亮点/研学流程’。\n"
+            "4) 小标题请使用中文层级（如‘（一）’、‘1.’），内容可直接写入 Word。\n"
+            f"章节：{section_name}\n"
+            f"基础要求：{default_prompt}\n"
+            f"用户额外要求：{user_prompt if user_prompt else '无'}\n"
+            "请直接开始正文。"
+        )
+
+        print(f"正在生成导出章节：{section_name}...")
+        generated[key] = call_ark_simple(final_prompt)
+
+    return generated

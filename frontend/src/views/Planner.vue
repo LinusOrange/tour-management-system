@@ -12,11 +12,29 @@
             v-model="userRequirement"
             type="textarea"
             :rows="3"
-            placeholder="输入指令，例如：'安排上午去故宫看古建，下午做漆扇'..."
+            placeholder="输入指令，例如：安排 3-4 天行程，上午科技馆，下午实践活动..."
           />
           <el-button type="primary" class="mt-4 w-full" :loading="aiLoading" @click="autoPlan">
             开始 AI 智能排产
           </el-button>
+          <p class="constraint-tip mt-3">
+            自动排产规则：上午不晚于 12:00，下午 14:00-18:00；超出当天自动顺延到下一天。
+          </p>
+
+          <el-alert
+            v-if="unmatchedKeywords.length > 0"
+            class="mt-3"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="以下关键词未命中活动仓库，请补充资源或调整关键词："
+          >
+            <template #default>
+              <el-space wrap>
+                <el-tag v-for="kw in unmatchedKeywords" :key="kw" type="warning">{{ kw }}</el-tag>
+              </el-space>
+            </template>
+          </el-alert>
         </el-card>
 
         <el-card shadow="never" class="resource-card">
@@ -28,39 +46,23 @@
               </el-tooltip>
             </div>
           </template>
-          
+
           <el-input v-model="searchQuery" placeholder="搜索积木或基地..." prefix-icon="Search" class="mb-4" clearable />
-          
+
           <div class="activity-pool">
             <el-collapse v-model="activeNames">
-              <el-collapse-item 
-                v-for="(group, location) in groupedActivities" 
-                :key="location" 
-                :name="location"
-              >
+              <el-collapse-item v-for="(group, location) in groupedActivities" :key="location" :name="location">
                 <template #title>
                   <div class="flex justify-between items-center w-full pr-4">
                     <span class="font-bold text-gray-600">
-                      <el-icon class="mr-1"><Location /></el-icon>{{ location }} 
+                      <el-icon class="mr-1"><Location /></el-icon>{{ location }}
                       <small class="font-normal text-gray-400">({{ group.length }})</small>
                     </span>
-                    <el-button 
-                      size="small" 
-                      type="primary" 
-                      plain 
-                      @click.stop="addAllFromLocation(group)"
-                    >
-                      全部加入
-                    </el-button>
+                    <el-button size="small" type="primary" plain @click.stop="addAllFromLocation(group)">全部加入</el-button>
                   </div>
                 </template>
 
-                <div 
-                  v-for="act in group" 
-                  :key="act.id" 
-                  class="block-item mini" 
-                  @click="addToTimeline(act)"
-                >
+                <div v-for="act in group" :key="act.id" class="block-item mini" @click="addToTimeline(act)">
                   <div class="block-header">
                     <span class="title">{{ act.title }}</span>
                     <el-tag size="small" effect="plain">{{ act.duration }}min</el-tag>
@@ -76,13 +78,18 @@
         <el-card shadow="never">
           <template #header>
             <div class="flex justify-between items-center">
-              <span class="font-bold text-green-600">行程路线预览 (可拖拽微调)</span>
-              <el-time-select
-                v-model="baseStartTime"
-                start="08:00" step="00:30" end="11:00"
-                @change="refreshSchedule"
-                style="width: 120px"
-              />
+              <span class="font-bold text-green-600">行程路线预览 (支持多日与手动微调)</span>
+              <div class="flex items-center gap-2">
+                <el-button type="primary" plain @click="goToExportWorkbench">导出方案</el-button>
+                <el-time-select
+                  v-model="baseStartTime"
+                  start="08:00"
+                  step="00:30"
+                  end="11:00"
+                  @change="refreshSchedule"
+                  style="width: 130px"
+                />
+              </div>
             </div>
           </template>
 
@@ -98,7 +105,37 @@
                     <div class="drag-handle"><el-icon><Rank /></el-icon></div>
                     <div class="block-content">
                       <h4>{{ element.title }}</h4>
-                      <p>📍 {{ element.location_name }} | ⏱️ {{ element.duration }} 分钟</p>
+                      <p>📍 {{ element.location_name }} | ⏱️ {{ element.manual_duration || element.duration }} 分钟</p>
+
+                      <div class="editor-row">
+                        <el-input-number
+                          v-model="element.manual_day"
+                          :min="1"
+                          :max="30"
+                          :step="1"
+                          controls-position="right"
+                          @change="refreshSchedule"
+                        />
+                        <el-time-select
+                          v-model="element.manual_start_time"
+                          placeholder="手动开始时间"
+                          start="08:00"
+                          step="00:05"
+                          end="18:00"
+                          clearable
+                          style="width: 140px"
+                          @change="refreshSchedule"
+                        />
+                        <el-input-number
+                          v-model="element.manual_duration"
+                          :min="10"
+                          :max="480"
+                          :step="5"
+                          controls-position="right"
+                          @change="refreshSchedule"
+                        />
+                        <span class="hint">天数/时间/时长手调，仅本次排产有效</span>
+                      </div>
                     </div>
                     <el-button link type="danger" @click="removeNode(index)">
                       <el-icon><Delete /></el-icon>
@@ -116,28 +153,60 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import draggable from 'vuedraggable'
 import axios from 'axios'
 import { ElMessage, ElNotification } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { MagicStick, Location, Rank, Delete, Search, Refresh } from '@element-plus/icons-vue'
 
-const API_BASE = 'http://212.64.26.173:8000/api/v1'
+const API_BASE = '/api/v1'
+const router = useRouter()
 const userRequirement = ref('')
 const baseStartTime = ref('09:00')
 const timeline = ref([])
 const libraryActivities = ref([])
 const searchQuery = ref('')
 const aiLoading = ref(false)
-const activeNames = ref([]) // 存储折叠面板展开状态
-const TRANSITION_TIME = 15
+const activeNames = ref([])
+const matchedKeywords = ref([])
+const unmatchedKeywords = ref([])
 
-// 加载资源库
+const TRANSITION_TIME = 15
+const MORNING_END = 12 * 60
+const AFTERNOON_START = 14 * 60
+const DAY_END = 18 * 60
+
+const parseTimeToMinutes = (time) => {
+  if (!time) return null
+  const [h, m] = time.split(':').map(Number)
+  return h * 60 + m
+}
+
+const formatMinutes = (minutes) => {
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+const normalizeIntoWindow = (minute) => {
+  if (minute >= MORNING_END && minute < AFTERNOON_START) return AFTERNOON_START
+  return minute
+}
+
+const nextDayStart = () => parseTimeToMinutes(baseStartTime.value) || 9 * 60
+
+const ensureSchedulableItem = (item) => ({
+  ...item,
+  manual_day: Number(item.manual_day) || 0,
+  manual_duration: Number(item.manual_duration) || Number(item.duration),
+  manual_start_time: item.manual_start_time || ''
+})
+
 const fetchActivities = async () => {
   try {
     const res = await axios.get(`${API_BASE}/activities`)
     libraryActivities.value = res.data
-    // 默认展开第一个基地
     if (res.data.length > 0) {
       const firstLoc = res.data[0].location_name || '通用基地'
       activeNames.value = [firstLoc]
@@ -149,13 +218,12 @@ const fetchActivities = async () => {
 
 onMounted(fetchActivities)
 
-// 核心：按基地分组的计算属性
 const groupedActivities = computed(() => {
-  const filtered = libraryActivities.value.filter(a => 
-    a.title.includes(searchQuery.value) || 
+  const filtered = libraryActivities.value.filter(a =>
+    a.title.includes(searchQuery.value) ||
     (a.location_name && a.location_name.includes(searchQuery.value))
   )
-  
+
   const groups = {}
   filtered.forEach(act => {
     const loc = act.location_name || '通用基地'
@@ -165,44 +233,81 @@ const groupedActivities = computed(() => {
   return groups
 })
 
-// 批量添加逻辑
 const addAllFromLocation = (acts) => {
-  const newItems = acts.map(act => ({
-    ...act,
-    temp_id: Date.now() + Math.random() + Math.random() // 确保 ID 唯一
-  }))
+  const newItems = acts.map(act => ensureSchedulableItem({ ...act, temp_id: Date.now() + Math.random() + Math.random() }))
   timeline.value.push(...newItems)
   refreshSchedule()
   ElMessage.success(`已将 ${acts.length} 个活动加入行程`)
 }
 
 const addToTimeline = (act) => {
-  timeline.value.push({ ...act, temp_id: Date.now() + Math.random() })
+  timeline.value.push(ensureSchedulableItem({ ...act, temp_id: Date.now() + Math.random() }))
   refreshSchedule()
 }
 
 const refreshSchedule = () => {
   if (timeline.value.length === 0) return
-  let currentTime = new Date(`2026-01-01 ${baseStartTime.value}`)
-  timeline.value = timeline.value.map((item) => {
-    const startStr = currentTime.toTimeString().slice(0, 5)
-    const endTime = new Date(currentTime.getTime() + item.duration * 60000)
-    const endStr = endTime.toTimeString().slice(0, 5)
-    currentTime = new Date(endTime.getTime() + TRANSITION_TIME * 60000)
-    return { ...item, display_time: `${startStr} - ${endStr}` }
+
+  let day = 1
+  let current = nextDayStart()
+
+  timeline.value = timeline.value.map((rawItem) => {
+    const item = ensureSchedulableItem(rawItem)
+    const duration = item.manual_duration > 0 ? item.manual_duration : Number(item.duration)
+
+    // 手动指定天数（仅本次排产）
+    if (item.manual_day && item.manual_day > day) {
+      day = item.manual_day
+      current = nextDayStart()
+    }
+
+    let start = item.manual_start_time ? parseTimeToMinutes(item.manual_start_time) : current
+    start = normalizeIntoWindow(start)
+
+    // 上午放不下则进入下午
+    if (start < MORNING_END && start + duration > MORNING_END) {
+      start = AFTERNOON_START
+    }
+
+    // 当天下午放不下则滚动到下一天
+    while (start + duration > DAY_END) {
+      day += 1
+      start = nextDayStart()
+      start = normalizeIntoWindow(start)
+      if (start < MORNING_END && start + duration > MORNING_END) {
+        start = AFTERNOON_START
+      }
+    }
+
+    const end = start + duration
+
+    current = normalizeIntoWindow(end + TRANSITION_TIME)
+    if (current >= DAY_END) {
+      day += 1
+      current = nextDayStart()
+    }
+
+    return {
+      ...item,
+      manual_day: item.manual_day || day,
+      manual_duration: duration,
+      display_time: `D${day} ${formatMinutes(start)} - ${formatMinutes(end)}`
+    }
   })
 }
 
 const autoPlan = async () => {
   if (!userRequirement.value) return ElMessage.warning('请输入您的行程需求')
   aiLoading.value = true
-  
+
   try {
     const res = await axios.post(`${API_BASE}/planner/ai-arrange`, {
       requirement: userRequirement.value
     })
-    
+
     if (res.data.plan.length === 0) {
+      matchedKeywords.value = []
+      unmatchedKeywords.value = []
       return ElNotification({
         title: '未匹配到资源',
         message: 'AI 没能找到符合要求的基地，您可以尝试简化关键词。',
@@ -210,16 +315,16 @@ const autoPlan = async () => {
       })
     }
 
-    // 1. 将所有匹配基地的积木一次性载入时间轴
-    timeline.value = res.data.plan.map(act => ({
+    timeline.value = res.data.plan.map(act => ensureSchedulableItem({
       ...act,
       temp_id: Date.now() + Math.random()
     }))
-    
-    // 2. 触发本地时间链计算
+
     refreshSchedule()
-    
-    // 3. 详细的成功反馈
+
+    matchedKeywords.value = res.data.matched_keywords || []
+    unmatchedKeywords.value = res.data.unmatched_keywords || []
+
     ElNotification({
       title: 'AI 联排成功',
       dangerouslyUseHTMLString: true,
@@ -228,11 +333,42 @@ const autoPlan = async () => {
       duration: 6000
     })
   } catch (error) {
+    matchedKeywords.value = []
+    unmatchedKeywords.value = []
     ElMessage.error('AI 匹配失败，请检查后端 API')
   } finally {
     aiLoading.value = false
   }
 }
+
+const saveExportDraft = () => {
+  const draft = {
+    requirement: userRequirement.value,
+    timeline: timeline.value.map(item => ({
+      id: item.id,
+      title: item.title,
+      duration: item.manual_duration || item.duration,
+      location_name: item.location_name,
+      display_time: item.display_time
+    }))
+  }
+  localStorage.setItem('planner_export_draft', JSON.stringify(draft))
+}
+
+const goToExportWorkbench = () => {
+  if (timeline.value.length === 0) {
+    ElMessage.warning('请先在排产工作台生成或添加活动后再导出')
+    return
+  }
+  saveExportDraft()
+  router.push('/export')
+}
+
+watch([timeline, userRequirement], () => {
+  if (timeline.value.length > 0) {
+    saveExportDraft()
+  }
+}, { deep: true })
 
 const removeNode = (index) => {
   timeline.value.splice(index, 1)
@@ -242,29 +378,50 @@ const removeNode = (index) => {
 
 <style scoped>
 .planner-container { background-color: #f8fafc; min-height: 100vh; }
-
-/* 资源库样式优化 */
 .activity-pool :deep(.el-collapse) { border: none; }
 .activity-pool :deep(.el-collapse-item__header) {
-  height: auto; padding: 12px 0; line-height: 1.4; border-bottom: 1px solid #f1f5f9;
+  height: auto;
+  padding: 12px 0;
+  line-height: 1.4;
+  border-bottom: 1px solid #f1f5f9;
 }
 .activity-pool :deep(.el-collapse-item__content) { padding-bottom: 8px; padding-top: 8px; }
 
 .block-item.mini {
-  background: #fff; border: 1px solid #f1f5f9; border-radius: 6px;
-  padding: 8px 12px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s;
+  background: #fff;
+  border: 1px solid #f1f5f9;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 .block-item.mini:hover { border-color: #3b82f6; background-color: #eff6ff; }
 .block-item.mini .title { font-size: 13px; color: #475569; }
 
-/* 时间轴样式 */
 .timeline-item-wrapper { display: flex; gap: 20px; }
-.time-indicator { display: flex; flex-direction: column; align-items: center; width: 60px; }
-.time-bubble { background: #3b82f6; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+.time-indicator { display: flex; flex-direction: column; align-items: center; width: 95px; }
+.time-bubble {
+  background: #3b82f6;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: bold;
+}
 .time-indicator .line { width: 2px; flex-grow: 1; background: #cbd5e1; margin: 4px 0; }
 .itinerary-block {
-  flex-grow: 1; background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-  padding: 16px; display: flex; align-items: center; margin-bottom: 20px;
+  flex-grow: 1;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
 }
 .drag-handle { cursor: grab; color: #94a3b8; margin-right: 15px; }
+.editor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.hint { font-size: 12px; color: #64748b; }
+.constraint-tip { font-size: 12px; color: #64748b; line-height: 1.4; }
 </style>
