@@ -7,6 +7,7 @@
         <template v-if="!isAdmin">
           <el-menu-item index="/ingest">AI 资源录入</el-menu-item>
           <el-menu-item index="/planner">智能排产工作台</el-menu-item>
+          <el-menu-item index="/export">文案导出工作台</el-menu-item>
           <el-menu-item index="/library">积木资产管理</el-menu-item>
         </template>
         
