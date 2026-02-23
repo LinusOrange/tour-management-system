@@ -100,7 +100,7 @@ const handleLogin = async () => {
     if (!valid) return
     loading.value = true
     try {
-      const res = await axios.post('http://212.64.26.173:8000/api/v1/auth/login', loginForm)
+      const res = await axios.post('/api/v1/auth/login', loginForm)
       localStorage.setItem('token', res.data.access_token)
       localStorage.setItem('username', loginForm.username)
       // 登录成功时，如果是管理员建议同步设置 isAdmin 标记

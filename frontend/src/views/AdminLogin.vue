@@ -76,7 +76,7 @@ const handleAdminLogin = async () => {
     loading.value = true
     try {
       // 1. 调用登录接口
-      const res = await axios.post('http://212.64.26.173:8000/api/v1/auth/login', adminForm)
+      const res = await axios.post('/api/v1/auth/login', adminForm)
       
       // 2. 存储身份标识
       localStorage.setItem('token', res.data.access_token)

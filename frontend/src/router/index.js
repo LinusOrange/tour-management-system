@@ -13,8 +13,17 @@ const routes = [
     component: () => import('../views/Register.vue')
   },
   {
-    // AI 资源录入 (首页)
+    path: '/admin/login',
+    name: 'AdminLogin',
+    component: () => import('../views/AdminLogin.vue')
+  },
+  {
     path: '/',
+    redirect: '/ingest'
+  },
+  {
+    // AI 资源录入
+    path: '/ingest',
     name: 'Ingest',
     component: () => import('../views/IngestView.vue'),
     meta: { requiresAuth: true }
@@ -65,7 +74,7 @@ router.beforeEach((to, from, next) => {
   } 
   // 2. 检查是否需要管理员权限
   else if (to.meta.requiresAdmin && !isRealAdmin) {
-    next('/') // 普通用户尝试进入后台，重定向回首页
+    next('/ingest') // 普通用户尝试进入后台，重定向回录入台
   } 
   else {
     next()
