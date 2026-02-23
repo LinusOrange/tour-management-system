@@ -302,7 +302,8 @@ async def ai_arrange_itinerary(req: PlanningRequest, db: Session = Depends(get_d
         "plan": final_plan,
         "matched_bases": selected_names,
         "matched_keywords": match_result.get("matched_keywords", []),
-        "unmatched_keywords": match_result.get("unmatched_keywords", [])
+        "unmatched_keywords": match_result.get("unmatched_keywords", []),
+        "selection_mode": match_result.get("selection_mode", "base_full")
     }
 
 @app.get("/api/v1/admin/users")

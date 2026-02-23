@@ -174,6 +174,29 @@ def _extract_keywords(text: str) -> List[str]:
     return list(dict.fromkeys(keywords))
 
 
+def _has_activity_filter_intent(requirement: str, keywords: List[str]) -> bool:
+    """
+    是否存在明确“活动级筛选”意图。
+    默认偏向整基地全量；只有明确筛选语义时才收窄到活动级。
+    """
+    text = (requirement or '').lower()
+
+    # 典型的“收窄/筛选”意图词
+    intent_phrases = [
+        '只要', '仅要', '仅安排', '筛选', '过滤', '限定', '聚焦', '重点安排', '优先安排',
+        '不要', '排除', '去掉', '指定活动', '某个活动', '单个活动', '按活动'
+    ]
+
+    if any(p in text for p in intent_phrases):
+        return True
+
+    # 若用户提到“活动”且关键词很少，通常是精确意图（例如“只安排火箭活动”）
+    if '活动' in text and len(keywords) <= 3:
+        return True
+
+    return False
+
+
 def select_multiple_locations_with_ai(requirement: str, locations_pool: list) -> list:
     """
     AI+规则混合匹配基地：
@@ -268,24 +291,15 @@ def match_locations_and_activities(requirement: str, locations_pool: list, locat
         if name in selected_locations:
             location_texts[name] = f"{name} {loc.get('summary','')}".lower()
 
-    # 是否出现“具体活动”意图：关键词能命中某个活动标题/内容/目标
-    activity_hit_keywords: Set[str] = set()
+    # 默认全选命中基地的所有活动（偏向整基地方案）
     selected_activity_ids: Dict[str, List[str]] = {}
-
     for loc_name in selected_locations:
         acts = location_activity_map.get(loc_name, [])
-        selected_activity_ids[loc_name] = [str(a.get('id')) for a in acts]  # 默认全选该基地活动
+        selected_activity_ids[loc_name] = [str(a.get('id')) for a in acts]
 
-        for kw in keywords:
-            for act in acts:
-                act_text = f"{act.get('title','')} {act.get('content','')} {act.get('edu_goals_text','')}".lower()
-                if kw in act_text:
-                    activity_hit_keywords.add(kw)
-
-    has_specific_activity_hint = len(activity_hit_keywords) > 0
-
-    # 若有具体活动提示词，则在命中基地内筛选活动；筛不到则回退到全选
-    if has_specific_activity_hint:
+    # 仅在“明确活动筛选意图”下，才执行活动级筛选
+    has_specific_activity_intent = _has_activity_filter_intent(requirement, keywords)
+    if has_specific_activity_intent:
         for loc_name in selected_locations:
             acts = location_activity_map.get(loc_name, [])
             filtered = []
@@ -293,6 +307,8 @@ def match_locations_and_activities(requirement: str, locations_pool: list, locat
                 act_text = f"{act.get('title','')} {act.get('content','')} {act.get('edu_goals_text','')}".lower()
                 if any(kw in act_text for kw in keywords):
                     filtered.append(str(act.get('id')))
+
+            # 有命中才收窄；若无命中，维持全选，避免误伤
             if filtered:
                 selected_activity_ids[loc_name] = filtered
 
@@ -313,7 +329,8 @@ def match_locations_and_activities(requirement: str, locations_pool: list, locat
         "selected_locations": selected_locations,
         "selected_activity_ids": selected_activity_ids,
         "matched_keywords": sorted(matched_keywords),
-        "unmatched_keywords": unmatched_keywords
+        "unmatched_keywords": unmatched_keywords,
+        "selection_mode": "activity_filter" if has_specific_activity_intent else "base_full"
     }
 def generate_document_sections(location_data: dict, activities: list, custom_prompts: dict = None) -> dict:
     """
