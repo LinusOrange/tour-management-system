@@ -17,6 +17,7 @@
           <el-button type="primary" class="mt-4 w-full" :loading="aiLoading" @click="autoPlan">
             开始 AI 智能排产
           </el-button>
+          <p class="constraint-tip mt-3">自动排产时段约束：上午不晚于 12:00 结束，下午安排在 14:00-18:00。</p>
         </el-card>
 
         <el-card shadow="never" class="resource-card">
@@ -28,26 +29,26 @@
               </el-tooltip>
             </div>
           </template>
-          
+
           <el-input v-model="searchQuery" placeholder="搜索积木或基地..." prefix-icon="Search" class="mb-4" clearable />
-          
+
           <div class="activity-pool">
             <el-collapse v-model="activeNames">
-              <el-collapse-item 
-                v-for="(group, location) in groupedActivities" 
-                :key="location" 
+              <el-collapse-item
+                v-for="(group, location) in groupedActivities"
+                :key="location"
                 :name="location"
               >
                 <template #title>
                   <div class="flex justify-between items-center w-full pr-4">
                     <span class="font-bold text-gray-600">
-                      <el-icon class="mr-1"><Location /></el-icon>{{ location }} 
+                      <el-icon class="mr-1"><Location /></el-icon>{{ location }}
                       <small class="font-normal text-gray-400">({{ group.length }})</small>
                     </span>
-                    <el-button 
-                      size="small" 
-                      type="primary" 
-                      plain 
+                    <el-button
+                      size="small"
+                      type="primary"
+                      plain
                       @click.stop="addAllFromLocation(group)"
                     >
                       全部加入
@@ -55,10 +56,10 @@
                   </div>
                 </template>
 
-                <div 
-                  v-for="act in group" 
-                  :key="act.id" 
-                  class="block-item mini" 
+                <div
+                  v-for="act in group"
+                  :key="act.id"
+                  class="block-item mini"
                   @click="addToTimeline(act)"
                 >
                   <div class="block-header">
@@ -77,12 +78,15 @@
           <template #header>
             <div class="flex justify-between items-center">
               <span class="font-bold text-green-600">行程路线预览 (可拖拽微调)</span>
-              <el-time-select
-                v-model="baseStartTime"
-                start="08:00" step="00:30" end="11:00"
-                @change="refreshSchedule"
-                style="width: 120px"
-              />
+              <div class="flex items-center gap-2">
+                <el-button type="primary" plain @click="goToExportWorkbench">导出方案</el-button>
+                <el-time-select
+                  v-model="baseStartTime"
+                  start="08:00" step="00:30" end="11:00"
+                  @change="refreshSchedule"
+                  style="width: 120px"
+                />
+              </div>
             </div>
           </template>
 
@@ -99,6 +103,35 @@
                     <div class="block-content">
                       <h4>{{ element.title }}</h4>
                       <p>📍 {{ element.location_name }} | ⏱️ {{ element.duration }} 分钟</p>
+                      <div class="editor-row">
+                        <el-time-select
+                          v-model="element.manual_start_time"
+                          placeholder="手动开始时间"
+                          start="08:00"
+                          step="00:05"
+                          end="18:00"
+                          clearable
+                          style="width: 135px"
+                          @change="refreshSchedule"
+                        />
+                        <el-input-number
+                          v-model="element.manual_duration"
+                          :min="10"
+                          :max="240"
+                          :step="5"
+                          controls-position="right"
+                          @change="refreshSchedule"
+                        />
+                        <span class="hint">可手动调整，仅本次排产有效</span>
+                      </div>
+                      <el-alert
+                        v-if="element.unscheduled"
+                        type="warning"
+                        :closable="false"
+                        show-icon
+                        title="当前活动超出 18:00，未排入时段，请手动缩短时长或调整开始时间"
+                        class="mt-2"
+                      />
                     </div>
                     <el-button link type="danger" @click="removeNode(index)">
                       <el-icon><Delete /></el-icon>
@@ -116,28 +149,54 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import draggable from 'vuedraggable'
 import axios from 'axios'
 import { ElMessage, ElNotification } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { MagicStick, Location, Rank, Delete, Search, Refresh } from '@element-plus/icons-vue'
 
-const API_BASE = 'http://212.64.26.173:8000/api/v1'
+const API_BASE = '/api/v1'
+const router = useRouter()
 const userRequirement = ref('')
 const baseStartTime = ref('09:00')
 const timeline = ref([])
 const libraryActivities = ref([])
 const searchQuery = ref('')
 const aiLoading = ref(false)
-const activeNames = ref([]) // 存储折叠面板展开状态
+const activeNames = ref([])
 const TRANSITION_TIME = 15
+const MORNING_END = 12 * 60
+const AFTERNOON_START = 14 * 60
+const DAY_END = 18 * 60
 
-// 加载资源库
+const parseTimeToMinutes = (time) => {
+  if (!time) return null
+  const [h, m] = time.split(':').map(Number)
+  return h * 60 + m
+}
+
+const formatMinutes = (minutes) => {
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+const normalizeIntoWindow = (minute) => {
+  if (minute >= MORNING_END && minute < AFTERNOON_START) return AFTERNOON_START
+  return minute
+}
+
+const ensureSchedulableItem = (item) => ({
+  ...item,
+  manual_duration: item.manual_duration || item.duration,
+  manual_start_time: item.manual_start_time || ''
+})
+
 const fetchActivities = async () => {
   try {
     const res = await axios.get(`${API_BASE}/activities`)
     libraryActivities.value = res.data
-    // 默认展开第一个基地
     if (res.data.length > 0) {
       const firstLoc = res.data[0].location_name || '通用基地'
       activeNames.value = [firstLoc]
@@ -149,13 +208,12 @@ const fetchActivities = async () => {
 
 onMounted(fetchActivities)
 
-// 核心：按基地分组的计算属性
 const groupedActivities = computed(() => {
-  const filtered = libraryActivities.value.filter(a => 
-    a.title.includes(searchQuery.value) || 
+  const filtered = libraryActivities.value.filter(a =>
+    a.title.includes(searchQuery.value) ||
     (a.location_name && a.location_name.includes(searchQuery.value))
   )
-  
+
   const groups = {}
   filtered.forEach(act => {
     const loc = act.location_name || '通用基地'
@@ -165,11 +223,10 @@ const groupedActivities = computed(() => {
   return groups
 })
 
-// 批量添加逻辑
 const addAllFromLocation = (acts) => {
-  const newItems = acts.map(act => ({
+  const newItems = acts.map(act => ensureSchedulableItem({
     ...act,
-    temp_id: Date.now() + Math.random() + Math.random() // 确保 ID 唯一
+    temp_id: Date.now() + Math.random() + Math.random()
   }))
   timeline.value.push(...newItems)
   refreshSchedule()
@@ -177,31 +234,62 @@ const addAllFromLocation = (acts) => {
 }
 
 const addToTimeline = (act) => {
-  timeline.value.push({ ...act, temp_id: Date.now() + Math.random() })
+  timeline.value.push(ensureSchedulableItem({ ...act, temp_id: Date.now() + Math.random() }))
   refreshSchedule()
 }
 
 const refreshSchedule = () => {
   if (timeline.value.length === 0) return
-  let currentTime = new Date(`2026-01-01 ${baseStartTime.value}`)
-  timeline.value = timeline.value.map((item) => {
-    const startStr = currentTime.toTimeString().slice(0, 5)
-    const endTime = new Date(currentTime.getTime() + item.duration * 60000)
-    const endStr = endTime.toTimeString().slice(0, 5)
-    currentTime = new Date(endTime.getTime() + TRANSITION_TIME * 60000)
-    return { ...item, display_time: `${startStr} - ${endStr}` }
+
+  let current = parseTimeToMinutes(baseStartTime.value) || 9 * 60
+  let overflowCount = 0
+
+  timeline.value = timeline.value.map((rawItem) => {
+    const item = ensureSchedulableItem(rawItem)
+    const duration = Number(item.manual_duration) > 0 ? Number(item.manual_duration) : Number(item.duration)
+
+    let start = item.manual_start_time ? parseTimeToMinutes(item.manual_start_time) : current
+    start = normalizeIntoWindow(start)
+
+    if (start < MORNING_END && start + duration > MORNING_END) {
+      start = AFTERNOON_START
+    }
+
+    if (start + duration > DAY_END) {
+      overflowCount += 1
+      return {
+        ...item,
+        manual_duration: duration,
+        display_time: '--:-- - --:--',
+        unscheduled: true
+      }
+    }
+
+    const end = start + duration
+    current = normalizeIntoWindow(end + TRANSITION_TIME)
+
+    return {
+      ...item,
+      manual_duration: duration,
+      display_time: `${formatMinutes(start)} - ${formatMinutes(end)}`,
+      unscheduled: false
+    }
   })
+
+  if (overflowCount > 0) {
+    ElMessage.warning(`有 ${overflowCount} 个活动超出 18:00，已标记为未排入，请手动调整`) 
+  }
 }
 
 const autoPlan = async () => {
   if (!userRequirement.value) return ElMessage.warning('请输入您的行程需求')
   aiLoading.value = true
-  
+
   try {
     const res = await axios.post(`${API_BASE}/planner/ai-arrange`, {
       requirement: userRequirement.value
     })
-    
+
     if (res.data.plan.length === 0) {
       return ElNotification({
         title: '未匹配到资源',
@@ -210,16 +298,13 @@ const autoPlan = async () => {
       })
     }
 
-    // 1. 将所有匹配基地的积木一次性载入时间轴
-    timeline.value = res.data.plan.map(act => ({
+    timeline.value = res.data.plan.map(act => ensureSchedulableItem({
       ...act,
       temp_id: Date.now() + Math.random()
     }))
-    
-    // 2. 触发本地时间链计算
+
     refreshSchedule()
-    
-    // 3. 详细的成功反馈
+
     ElNotification({
       title: 'AI 联排成功',
       dangerouslyUseHTMLString: true,
@@ -234,6 +319,35 @@ const autoPlan = async () => {
   }
 }
 
+const saveExportDraft = () => {
+  const draft = {
+    requirement: userRequirement.value,
+    timeline: timeline.value.map(item => ({
+      id: item.id,
+      title: item.title,
+      duration: item.manual_duration || item.duration,
+      location_name: item.location_name,
+      display_time: item.display_time
+    }))
+  }
+  localStorage.setItem('planner_export_draft', JSON.stringify(draft))
+}
+
+const goToExportWorkbench = () => {
+  if (timeline.value.length === 0) {
+    ElMessage.warning('请先在排产工作台生成或添加活动后再导出')
+    return
+  }
+  saveExportDraft()
+  router.push('/export')
+}
+
+watch([timeline, userRequirement], () => {
+  if (timeline.value.length > 0) {
+    saveExportDraft()
+  }
+}, { deep: true })
+
 const removeNode = (index) => {
   timeline.value.splice(index, 1)
   refreshSchedule()
@@ -242,8 +356,6 @@ const removeNode = (index) => {
 
 <style scoped>
 .planner-container { background-color: #f8fafc; min-height: 100vh; }
-
-/* 资源库样式优化 */
 .activity-pool :deep(.el-collapse) { border: none; }
 .activity-pool :deep(.el-collapse-item__header) {
   height: auto; padding: 12px 0; line-height: 1.4; border-bottom: 1px solid #f1f5f9;
@@ -257,7 +369,6 @@ const removeNode = (index) => {
 .block-item.mini:hover { border-color: #3b82f6; background-color: #eff6ff; }
 .block-item.mini .title { font-size: 13px; color: #475569; }
 
-/* 时间轴样式 */
 .timeline-item-wrapper { display: flex; gap: 20px; }
 .time-indicator { display: flex; flex-direction: column; align-items: center; width: 60px; }
 .time-bubble { background: #3b82f6; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
@@ -267,4 +378,7 @@ const removeNode = (index) => {
   padding: 16px; display: flex; align-items: center; margin-bottom: 20px;
 }
 .drag-handle { cursor: grab; color: #94a3b8; margin-right: 15px; }
+.editor-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.hint { font-size: 12px; color: #64748b; }
+.constraint-tip { font-size: 12px; color: #64748b; line-height: 1.4; }
 </style>

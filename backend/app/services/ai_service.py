@@ -227,3 +227,72 @@ def call_ark_simple(prompt: str) -> str:
         return response.choices[0].message.content
     except:
         return "内容生成失败，请手动补充。"
+
+def generate_export_sections(plan_context: dict, custom_prompts: dict | None = None) -> dict:
+    """
+    级联生成导出文案 5 个章节。
+    - section_1_base: 研学基地（结合排产工作台的基地/活动）
+    - section_2_background: 课程背景
+    - section_3_goals: 研学目标
+    - section_4_highlights: 课程亮点
+    - section_5_process: 研学流程说明
+    """
+    custom_prompts = custom_prompts or {}
+
+    locations = plan_context.get('locations', [])
+    timeline = plan_context.get('timeline', [])
+    requirement = plan_context.get('requirement', '')
+
+    location_text = "\n".join([
+        f"- 基地：{loc.get('name','未知基地')}；地址：{loc.get('address','待补充')}；简介：{loc.get('description','待补充')}"
+        for loc in locations
+    ])
+
+    timeline_text = "\n".join([
+        f"- {idx+1}. [{item.get('display_time','时间待定')}] {item.get('title','未命名活动')}（{item.get('duration', 0)}分钟，基地：{item.get('location_name','待定')}）"
+        for idx, item in enumerate(timeline)
+    ])
+
+    section_configs = [
+        (
+            'section_1_base',
+            '研学基地',
+            f"请根据以下排产涉及基地信息，撰写 400~600 字『研学基地』章节。重点写基地特色、教育价值与课程适配性。\n基地信息：\n{location_text}"
+        ),
+        (
+            'section_2_background',
+            '课程背景',
+            f"请撰写 500~800 字『课程背景』。结合用户需求与基地定位，说明项目缘起、时代价值、学段意义。\n用户需求：{requirement}\n基地信息：\n{location_text}"
+        ),
+        (
+            'section_3_goals',
+            '研学目标',
+            f"请生成『研学目标』章节，按知识目标、能力目标、素养目标三个维度展开，每个维度 2-3 条，可执行可评价。\n行程活动：\n{timeline_text}"
+        ),
+        (
+            'section_4_highlights',
+            '课程亮点',
+            "请生成『课程亮点』章节，输出 4 个亮点，每个亮点包含标题和一段 120~180 字说明，强调创新性与可落地性。"
+        ),
+        (
+            'section_5_process',
+            '研学流程',
+            f"请根据以下时间轴，写一段 400~700 字『研学流程说明』，强调环节衔接与学习闭环。\n时间轴：\n{timeline_text}"
+        )
+    ]
+
+    generated = {}
+    for key, section_name, default_prompt in section_configs:
+        user_prompt = custom_prompts.get(key, '').strip()
+        final_prompt = (
+            "你是一名资深研学课程总设计师，请用正式中文输出，不要使用Markdown。\n"
+            f"章节：{section_name}\n"
+            f"基础要求：{default_prompt}\n"
+            f"用户额外要求：{user_prompt if user_prompt else '无'}\n"
+            "请直接给出可放入方案书的正文。"
+        )
+
+        print(f"正在生成导出章节：{section_name}...")
+        generated[key] = call_ark_simple(final_prompt)
+
+    return generated
