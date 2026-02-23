@@ -1,7 +1,8 @@
 import json
 import os
+import re
 from openai import OpenAI
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Set
 
 # 配置信息
 AI_KEY = os.getenv("ARK_API_KEY", "91a598f5-a30c-4ac7-9c6f-3e0496b73c3b")
@@ -160,15 +161,55 @@ def plan_activities_with_ai(requirement: str, activity_pool: list) -> list:
         print(f"Planning Schema Error: {e}")
         return []
 
+def _extract_keywords(text: str) -> List[str]:
+    """从自然语言需求中提取可用于匹配的关键词（中英文、数字）。"""
+    if not text:
+        return []
+
+    tokens = re.split(r"[，。,.；;、\s:：()（）\[\]【】|/\\-]+", text.lower())
+    stop_words = {
+        "我", "我们", "你", "你们", "请", "需要", "想要", "安排", "一个", "一些", "进行", "可以", "以及", "和", "与", "的", "在", "到", "去", "并", "含", "包含", "相关", "主题", "活动", "课程", "研学", "行程", "天", "日"
+    }
+    keywords = [t for t in tokens if t and len(t) >= 2 and t not in stop_words]
+    return list(dict.fromkeys(keywords))
+
+
 def select_multiple_locations_with_ai(requirement: str, locations_pool: list) -> list:
-    """AI 匹配：筛选基地名称"""
-    pool_text = "\n".join([f"- {loc['name']}: {loc['summary']}" for loc in locations_pool])
+    """
+    AI+规则混合匹配基地：
+    1) 规则：关键词命中基地名称 / 基地摘要（含子活动标题、内容、目标）
+    2) AI：语义匹配补充候选
+    3) 合并去重
+    """
+    if not requirement or not locations_pool:
+        return []
+
+    # 规则匹配：支持“基地名称命中” + “活动目标/内容命中”
+    keywords = _extract_keywords(requirement)
+    keyword_matched: Set[str] = set()
+    for loc in locations_pool:
+        name_text = str(loc.get('name', '')).lower()
+        summary_text = str(loc.get('summary', '')).lower()
+        if any((kw in name_text) or (kw in summary_text) for kw in keywords):
+            keyword_matched.add(loc.get('name'))
+
+    # AI 匹配：用于补充语义相关基地
+    pool_text = "\n".join([
+        f"- 基地名: {loc.get('name', '')}\n  基地摘要: {loc.get('summary', '')}" for loc in locations_pool
+    ])
+    ai_matched: Set[str] = set()
     try:
         response = client.chat.completions.create(
-            model=AI_MODEL, 
+            model=AI_MODEL,
             messages=[
-                {"role": "system", "content": "你是一个研学匹配专家。"},
-                {"role": "user", "content": f"需求：{requirement}\n资源：\n{pool_text}"}
+                {
+                    "role": "system",
+                    "content": "你是研学排产匹配专家。必须根据用户需求关键词匹配基地。若关键词命中基地名称或基地下任一子活动目标/内容/标题，则应选择该基地。"
+                },
+                {
+                    "role": "user",
+                    "content": f"用户需求：{requirement}\n\n候选基地与子活动摘要：\n{pool_text}\n\n请返回最相关的基地名称数组。"
+                }
             ],
             response_format={
                 "type": "json_schema",
@@ -187,10 +228,17 @@ def select_multiple_locations_with_ai(requirement: str, locations_pool: list) ->
             }
         )
         res_data = json.loads(response.choices[0].message.content)
-        return res_data.get("selected_locations", [])
+        ai_matched = set(res_data.get("selected_locations", []))
     except Exception as e:
         print(f"Selection Schema Error: {e}")
-        return []
+
+    merged = list(dict.fromkeys([*keyword_matched, *ai_matched]))
+
+    # 如果完全没命中，保底给 AI 第一候选（避免空计划）
+    if not merged and locations_pool:
+        merged = [locations_pool[0].get('name')]
+
+    return merged
     
 def generate_document_sections(location_data: dict, activities: list, custom_prompts: dict = None) -> dict:
     """

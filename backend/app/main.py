@@ -253,7 +253,17 @@ async def ai_arrange_itinerary(req: PlanningRequest, db: Session = Depends(get_d
         if name not in loc_map: loc_map[name] = []
         loc_map[name].append(a)
 
-    locations_pool = [{"name": n, "summary": "、".join([act.title for act in acts])} for n, acts in loc_map.items()]
+    locations_pool = []
+    for n, acts in loc_map.items():
+        summary_parts = []
+        for act in acts:
+            goals_text = " ".join([str(v) for v in (act.edu_goals or {}).values()])
+            summary_parts.append(f"标题:{act.title}; 内容:{act.content or ''}; 目标:{goals_text}")
+        locations_pool.append({
+            "name": n,
+            "summary": " | ".join(summary_parts)
+        })
+
     selected_names = ai_service.select_multiple_locations_with_ai(req.requirement, locations_pool)
 
     final_plan = []
