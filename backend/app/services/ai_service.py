@@ -410,9 +410,7 @@ def generate_export_sections(plan_context: dict, custom_prompts: dict | None = N
         final_prompt = (
             "你是一名资深研学课程总设计师。\n"
             "【硬性约束】\n"
-            "1) 只输出正文段落，不要输出任何标题或小标题。\n"
             "2) 严禁输出 Markdown 语法（如 #、##、###、####、**、-、1.）。\n"
-            "3) 不要重复章节名称，不要单独输出‘研学基地/课程背景/研学目标/课程亮点/研学流程’。\n"
             "4) 输出可直接粘贴到 Word 的连续中文文本。\n"
             f"章节：{section_name}\n"
             f"基础要求：{default_prompt}\n"
